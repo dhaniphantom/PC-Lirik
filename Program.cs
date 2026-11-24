@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -36,8 +37,15 @@ class Overlay : Window
     (string Title, string Artist, int Seconds)? song;
     List<Line>? lines;
     double pace;
-    // Makes up for the polling delay and for line times that people tapped in slightly late.
-    public TimeSpan Lead = TimeSpan.FromMilliseconds(250);
+    // Set by ear, for example for speakers with a delay.
+    public TimeSpan Offset;
+    public VocalCut? Vocals;
+    public string PlayerId = "";
+    bool playing;
+
+    public (string Title, string Artist, string Lyrics) Status =>
+        !playing || song is not { } s ? ("Tidak ada lagu yang diputar", "", "")
+        : (s.Title, s.Artist, lines is null ? "Mencari lirik…" : lines.Count > 0 ? "Lirik ditemukan" : notice);
     (string Now, string After)? shown;
     string notice = "";
     DateTime noticeUntil, nextColorCheck;
@@ -124,22 +132,24 @@ class Overlay : Window
             .Where(s => s.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
             .OrderByDescending(s => s.SourceAppUserModelId.Contains("Spotify", StringComparison.OrdinalIgnoreCase))
             .FirstOrDefault();
+        playing = session is not null;
         if (session is null) { Display("", ""); return; }
 
+        PlayerId = session.SourceAppUserModelId;
         var info = await session.TryGetMediaPropertiesAsync();
         var timeline = session.GetTimelineProperties();
         var duration = timeline.EndTime - timeline.StartTime;
-        if (string.IsNullOrWhiteSpace(info.Title) || duration <= TimeSpan.Zero) { Display("", ""); return; }
+        if (string.IsNullOrWhiteSpace(info.Title) || duration <= TimeSpan.Zero) { playing = false; Display("", ""); return; }
 
         // Duration is part of the key: on a track change the title can arrive before the new duration.
-        var playing = (info.Title, info.Artist ?? "", (int)duration.TotalSeconds);
-        if (song != playing || retryAt <= DateTime.UtcNow)
+        var wanted = (info.Title, info.Artist ?? "", (int)duration.TotalSeconds);
+        if (song != wanted || retryAt <= DateTime.UtcNow)
         {
-            song = playing;
+            song = wanted;
             lines = null;
             retryAt = null;
             notice = "";
-            _ = LoadAsync(playing, duration);
+            _ = LoadAsync(wanted, info.AlbumTitle ?? "", duration);
         }
 
         if (DateTime.UtcNow >= nextColorCheck)
@@ -152,10 +162,12 @@ class Overlay : Window
 
         // Chrome rarely reports its position, so extrapolate from the last report.
         var rate = session.GetPlaybackInfo().PlaybackRate ?? 1;
-        var position = timeline.Position + (DateTimeOffset.Now - timeline.LastUpdatedTime) * rate + Lead;
-        var i = Lyrics.IndexAt(lines, position);
+        var position = timeline.Position + (DateTimeOffset.Now - timeline.LastUpdatedTime) * rate + Offset - (Vocals?.Delay ?? TimeSpan.Zero);
+        var i = Lyrics.IndexAt(lines, position + Lyrics.RollLead);
         Display(i >= 0 ? lines[i].Text : "", i + 1 < lines.Count ? lines[i + 1].Text : "");
-        if (i >= 0) Sweep(Lyrics.Progress(lines, i, position, pace));
+        if (i < 0) return;
+        if (position < lines[i].Time) sung.BeginAnimation(TextEffect.PositionCountProperty, null); // Rolling in, not sung yet.
+        else Sweep(Lyrics.Progress(lines, i, position, pace));
     }
 
     // Restarted every tick, so it follows seeks within a line.
@@ -170,14 +182,14 @@ class Overlay : Window
         if (((SolidColorBrush)sung.Foreground).Color != color) sung.Foreground = new SolidColorBrush(color);
     }
 
-    async Task LoadAsync((string Title, string Artist, int Seconds) wanted, TimeSpan duration)
+    async Task LoadAsync((string Title, string Artist, int Seconds) wanted, string album, TimeSpan duration)
     {
         List<Line> found = [];
         string message;
         DateTime? retry = null;
         try
         {
-            found = await Lyrics.FetchAsync(wanted.Title, wanted.Artist, duration);
+            found = await Lyrics.FetchAsync(wanted.Title, wanted.Artist, album, duration);
             message = $"Lirik tidak ditemukan: {wanted.Title}";
         }
         catch (Exception)
@@ -264,32 +276,12 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Contains("--selftest")) return Lyrics.SelfTest() && Cover.SelfTest() && Romanize.SelfTest() ? 0 : 1;
+        if (args.Contains("--selftest")) return Lyrics.SelfTest() && Cover.SelfTest() && Romanize.SelfTest() && VocalCut.SelfTest() ? 0 : 1;
 
-        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
         var overlay = new Overlay();
-        var unlock = new Forms.ToolStripMenuItem("Buka kunci / geser") { CheckOnClick = true };
-        unlock.CheckedChanged += (_, _) => overlay.SetUnlocked(unlock.Checked);
-        var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add(unlock);
-        var lead = new Forms.ToolStripMenuItem();
-        void Nudge(int milliseconds)
-        {
-            overlay.Lead += TimeSpan.FromMilliseconds(milliseconds);
-            lead.Text = $"Lirik maju {overlay.Lead.TotalSeconds:0.0#} dtk";
-        }
-        lead.DropDownItems.Add("Lebih cepat 0,1 dtk", null, (_, _) => Nudge(100));
-        lead.DropDownItems.Add("Lebih lambat 0,1 dtk", null, (_, _) => Nudge(-100));
-        Nudge(0);
-        menu.Items.Add(lead);
-        menu.Items.Add("Keluar", null, (_, _) => app.Shutdown());
-        using var tray = new Forms.NotifyIcon
-        {
-            Icon = System.Drawing.SystemIcons.Application,
-            Text = "Lirik Melayang",
-            ContextMenuStrip = menu,
-            Visible = true,
-        };
-        return app.Run(overlay);
+        app.MainWindow = new ControlWindow(overlay);
+        overlay.Show();
+        return app.Run(app.MainWindow);
     }
 }

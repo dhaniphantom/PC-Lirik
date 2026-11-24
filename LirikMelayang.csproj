@@ -6,7 +6,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- A debug file would store the build folder, which contains the Windows user name, in the exe. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <!-- dotnet publish -r win-x64 makes one exe that runs without .NET installed. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishSelfContained>true</PublishSelfContained>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- MeCab reads its dictionary from files on disk, so everything is extracted at startup. -->
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <NoWarn>$(NoWarn);NETSDK1244;WPF0001</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />
@@ -14,5 +24,6 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MeCab.DotNet" Version="1.2.0" />
+    <PackageReference Include="NAudio.Wasapi" Version="3.3.0" />
   </ItemGroup>
 </Project>

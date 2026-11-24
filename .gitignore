@@ -57,3 +57,4 @@ dkms.conf
 # .NET build output
 bin/
 obj/
+publish/
